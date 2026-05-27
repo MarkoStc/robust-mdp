@@ -1,0 +1,12 @@
+__pycache__/
+*.pyc
+*.pyo
+outputs/
+.ipynb_checkpoints/
+*.npy
+papers/*.txt
+
+# core dumps (e.g. core_clariden-ln004_*)
+core_*
+core.*
+*.core
