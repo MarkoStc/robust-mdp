@@ -96,6 +96,9 @@ def main():
                     help="theta filename inside run-dir")
     ap.add_argument("--n-stochastic", type=int, default=40,
                     help="episodes for the average-case stochastic nature")
+    ap.add_argument("--n-worstcase", type=int, default=20,
+                    help="seeds for the worst-case adversarial nature (our policy "
+                         "samples candidates, so a single episode is noisy)")
     ap.add_argument("--static-max-iters", type=int, default=25)
     ap.add_argument("--seed", type=int, default=123)
     ap.add_argument("--out-dir", default="")
@@ -142,14 +145,23 @@ def main():
     controllers = {"Ours": ours_fn, "StaticApprox": static_fn, "Knapsack": knapsack_fn}
 
     # ---- worst-case (adversarial) evaluation ----------------------------
+    # Our policy samples its candidate actions, so the greedy adversary's outcome
+    # is noisy across seeds; a single deterministic episode is misleading. We
+    # report the distribution over n_worstcase seeds. StaticApprox/Knapsack are
+    # deterministic (no sampling) so every seed gives the same value.
     results = {}
-    print("\n== Worst-case adversarial nature ==", flush=True)
+    print(f"\n== Worst-case adversarial nature ({args.n_worstcase} seeds) ==", flush=True)
     for name, fn in controllers.items():
-        rng_ctrl = np.random.default_rng(args.seed)
-        stats = run_episode(fn, worst_case_nature, cfg, md, rng_ctrl, None)
-        results.setdefault(name, {})["worst_case"] = stats
-        print(f"  {name:12s}  lost={stats['lost_value']:.3f}  "
-              f"protected={stats['protected_value']:.3f}  free={stats['free_value']:.3f}", flush=True)
+        samples = []
+        for s in range(args.n_worstcase):
+            rng_ctrl = np.random.default_rng(args.seed + s)
+            samples.append(run_episode(fn, worst_case_nature, cfg, md, rng_ctrl, None))
+        agg = aggregate(samples)
+        results.setdefault(name, {})["worst_case"] = agg
+        print(f"  {name:12s}  lost mean={agg['lost_value']['mean']:.3f}"
+              f" [{agg['lost_value']['min']:.2f},{agg['lost_value']['max']:.2f}]"
+              f" std={agg['lost_value']['std']:.3f}"
+              f"  protected mean={agg['protected_value']['mean']:.3f}", flush=True)
 
     # ---- average-case (stochastic) evaluation ---------------------------
     print(f"\n== Average-case stochastic nature ({args.n_stochastic} episodes) ==", flush=True)
@@ -188,17 +200,18 @@ def make_plot(results, md, out_dir):
     x = np.arange(len(names))
     width = 0.38
 
+    def err(metric, field):
+        lo = [results[n][field][metric]["mean"] - results[n][field][metric]["min"] for n in names]
+        hi = [results[n][field][metric]["max"] - results[n][field][metric]["mean"] for n in names]
+        return [lo, hi]
+
     # panel 0: lost value (lower is better)  -- the robustness metric
     ax = axes[0]
-    wc = [results[n]["worst_case"]["lost_value"] for n in names]
+    wc = [results[n]["worst_case"]["lost_value"]["mean"] for n in names]
     st = [results[n]["stochastic"]["lost_value"]["mean"] for n in names]
-    st_lo = [results[n]["stochastic"]["lost_value"]["mean"]
-             - results[n]["stochastic"]["lost_value"]["min"] for n in names]
-    st_hi = [results[n]["stochastic"]["lost_value"]["max"]
-             - results[n]["stochastic"]["lost_value"]["mean"] for n in names]
-    ax.bar(x - width / 2, wc, width, label="worst-case (adversarial)",
-           color=[colors[n] for n in names])
-    ax.bar(x + width / 2, st, width, yerr=[st_lo, st_hi], capsize=4,
+    ax.bar(x - width / 2, wc, width, yerr=err("lost_value", "worst_case"), capsize=4,
+           label="worst-case (adversarial, mean ± range)", color=[colors[n] for n in names])
+    ax.bar(x + width / 2, st, width, yerr=err("lost_value", "stochastic"), capsize=4,
            label="stochastic (avg ± range)", color=[colors[n] for n in names], alpha=0.5)
     ax.set_xticks(x); ax.set_xticklabels(names)
     ax.set_ylabel("Lost conservation value")
@@ -207,7 +220,7 @@ def make_plot(results, md, out_dir):
 
     # panel 1: protected value (higher is better)
     ax = axes[1]
-    wc = [results[n]["worst_case"]["protected_value"] for n in names]
+    wc = [results[n]["worst_case"]["protected_value"]["mean"] for n in names]
     st = [results[n]["stochastic"]["protected_value"]["mean"] for n in names]
     ax.bar(x - width / 2, wc, width, label="worst-case (adversarial)",
            color=[colors[n] for n in names])
@@ -227,17 +240,17 @@ def make_plot(results, md, out_dir):
 
 def print_verdict(results):
     print("\n== Verdict (worst-case adversarial lost value, lower=better) ==", flush=True)
-    ranked = sorted(results.items(), key=lambda kv: kv[1]["worst_case"]["lost_value"])
+    ranked = sorted(results.items(), key=lambda kv: kv[1]["worst_case"]["lost_value"]["mean"])
     for rank, (name, r) in enumerate(ranked, 1):
-        print(f"  {rank}. {name:12s}  lost={r['worst_case']['lost_value']:.3f}", flush=True)
-    best = ranked[0][0]
-    ours = results["Ours"]["worst_case"]["lost_value"]
+        wc = r["worst_case"]["lost_value"]
+        print(f"  {rank}. {name:12s}  lost={wc['mean']:.3f} ± {wc['std']:.3f}", flush=True)
+    ours = results["Ours"]["worst_case"]["lost_value"]["mean"]
     for name in results:
         if name == "Ours":
             continue
-        other = results[name]["worst_case"]["lost_value"]
+        other = results[name]["worst_case"]["lost_value"]["mean"]
         if other > 0:
-            print(f"  Ours vs {name}: {(other - ours) / other * 100:+.1f}% less worst-case loss", flush=True)
+            print(f"  Ours vs {name}: {(other - ours) / other * 100:+.1f}% less worst-case loss (mean)", flush=True)
 
 
 if __name__ == "__main__":
