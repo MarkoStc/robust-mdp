@@ -1,0 +1,89 @@
+/users/marko_stojanovic/qa-gym/.venv/bin/python
+Python 3.12.12
+Tue May 19 13:45:10 2026       
++-----------------------------------------------------------------------------------------+
+| NVIDIA-SMI 590.48.01              Driver Version: 590.48.01      CUDA Version: 13.1     |
++-----------------------------------------+------------------------+----------------------+
+| GPU  Name                 Persistence-M | Bus-Id          Disp.A | Volatile Uncorr. ECC |
+| Fan  Temp   Perf          Pwr:Usage/Cap |           Memory-Usage | GPU-Util  Compute M. |
+|                                         |                        |               MIG M. |
+|=========================================+========================+======================|
+|   0  NVIDIA GH200 120GB             On  |   00000009:01:00.0 Off |                    0 |
+| N/A   25C    P0            117W /  900W |       3MiB /  97871MiB |      0%      Default |
+|                                         |                        |             Disabled |
++-----------------------------------------+------------------------+----------------------+
+|   1  NVIDIA GH200 120GB             On  |   00000019:01:00.0 Off |                    0 |
+| N/A   27C    P0             83W /  900W |       3MiB /  97871MiB |      0%      Default |
+|                                         |                        |             Disabled |
++-----------------------------------------+------------------------+----------------------+
+|   2  NVIDIA GH200 120GB             On  |   00000029:01:00.0 Off |                    0 |
+| N/A   26C    P0            128W /  900W |       3MiB /  97871MiB |      0%      Default |
+|                                         |                        |             Disabled |
++-----------------------------------------+------------------------+----------------------+
+|   3  NVIDIA GH200 120GB             On  |   00000039:01:00.0 Off |                    0 |
+| N/A   25C    P0             76W /  900W |       3MiB /  97871MiB |      0%      Default |
+|                                         |                        |             Disabled |
++-----------------------------------------+------------------------+----------------------+
+
++-----------------------------------------------------------------------------------------+
+| Processes:                                                                              |
+|  GPU   GI   CI              PID   Type   Process name                        GPU Memory |
+|        ID   ID                                                               Usage      |
+|=========================================================================================|
+|  No running processes found                                                             |
++-----------------------------------------------------------------------------------------+
+=== Encoder mode (device=cuda) ===
+[pretrain] collecting 800 episodes ...
+  [pretrain-collect] episode 80/800
+  [pretrain-collect] episode 160/800
+  [pretrain-collect] episode 240/800
+  [pretrain-collect] episode 320/800
+  [pretrain-collect] episode 400/800
+  [pretrain-collect] episode 480/800
+  [pretrain-collect] episode 560/800
+  [pretrain-collect] episode 640/800
+  [pretrain-collect] episode 720/800
+  [pretrain-collect] episode 800/800
+[pretrain] dataset shape: grids=(8000, 15, 10, 10), returns std=0.122
+[pretrain] epoch 4/40  loss=0.00139
+[pretrain] epoch 8/40  loss=0.00117
+[pretrain] epoch 12/40  loss=0.00097
+[pretrain] epoch 16/40  loss=0.00094
+[pretrain] epoch 20/40  loss=0.00097
+[pretrain] epoch 24/40  loss=0.00093
+[pretrain] epoch 28/40  loss=0.00091
+[pretrain] epoch 32/40  loss=0.00089
+[pretrain] epoch 36/40  loss=0.00087
+[pretrain] epoch 40/40  loss=0.00087
+[pretrain] saved encoder to outputs/slurm/biodiv-2312346/encoder.pt  final_loss=0.00087
+=== Pretrain done in 99.8s ===
+=== Sanity checks ===
+sanity ok
+=== Training ===
+[init] feature_dim=64, n=100, controller_cand_target=200, nature_cand_target=200
+
+[outer 1/5] running Algorithm 1 ...
+[outer 1] theta norm = 0.4405
+[outer 1] avg_protected=15.766  avg_developed=5.062  avg_free=5.041 (total value = 25.87)
+
+[outer 2/5] running Algorithm 1 ...
+[outer 2] theta norm = 0.6078
+[outer 2] avg_protected=15.604  avg_developed=5.395  avg_free=4.871 (total value = 25.87)
+
+[outer 3/5] running Algorithm 1 ...
+[outer 3] theta norm = 0.6070
+[outer 3] avg_protected=15.431  avg_developed=5.709  avg_free=4.730 (total value = 25.87)
+
+[outer 4/5] running Algorithm 1 ...
+[outer 4] theta norm = 0.6087
+[outer 4] avg_protected=15.659  avg_developed=5.434  avg_free=4.776 (total value = 25.87)
+
+[outer 5/5] running Algorithm 1 ...
+[outer 5] theta norm = 0.6074
+[outer 5] avg_protected=15.571  avg_developed=5.429  avg_free=4.870 (total value = 25.87)
+=== Training done in 4854.3s ===
+=== Action-span diagnostics ===
+diag t=1: {'controller': {'n_ref': 1288, 'n_cand': 100, 'median_proj_err': 3.8578621195720606e-16, 'p90': 6.056860039888281e-16, 'p95': 6.960029789181765e-16}, 'nature': {'n_ref': 28, 'n_cand': 28, 'median_proj_err': 8.737591199260206e-16, 'p90': 9.24044142597879e-16, 'p95': 9.32638147631546e-16}}
+diag t=2: {'controller': {'n_ref': 1256, 'n_cand': 100, 'median_proj_err': 4.724538939538966e-16, 'p90': 8.994353012357154e-16, 'p95': 1.0624313697375581e-15}, 'nature': {'n_ref': 674, 'n_cand': 111, 'median_proj_err': 8.369955389569068e-11, 'p90': 4.35297786002914e-10, 'p95': 5.423685984422578e-10}}
+diag t=3: {'controller': {'n_ref': 1264, 'n_cand': 96, 'median_proj_err': 1.0556153313663969e-15, 'p90': 1.1367494816929358e-15, 'p95': 1.1628509209929546e-15}, 'nature': {'n_ref': 1632, 'n_cand': 129, 'median_proj_err': 1.5868818921526774e-10, 'p90': 7.397184792685437e-10, 'p95': 9.716134866782796e-10}}
+=== All done ===

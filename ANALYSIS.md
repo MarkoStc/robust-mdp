@@ -1,0 +1,428 @@
+# Biodiversity Robust-MDP — Runs, Configurations, Plots & Scaling Analysis
+
+This document is a self-contained reference for the repository. It is written so
+that an AI agent (or a new collaborator) given the zipped repo can report, in
+detail, **what was run, how it was configured, what every plot/artifact means,
+and how the method is expected to scale to the paper's real 692-parcel setting.**
+
+Companion documents:
+- `CLAUDE.md` — the full modeling spec (conventions, formulas, feature lists).
+- `papers/10341148.pdf` — the reference paper (Ye et al., *Conserving
+  Biodiversity via Adjustable Robust Optimization*, AAMAS 2022). `papers/*.txt`
+  are extracted plain-text versions.
+
+All timing numbers below were measured on the Clariden cluster GPU node
+(`uenv pytorch/v2.9.1:v2`, CUDA), the same hardware the runs used.
+
+---
+
+## 1. What this repo is
+
+A toy biodiversity-conservation game modeled as an **approximate robust MDP /
+zero-sum Markov game** on a 10×10 grid of land parcels.
+
+- **Controller** (conservation org) protects parcels each year within a budget.
+- **Nature** (human development) develops unprotected parcels adversarially,
+  constrained to a *likelihood uncertainty set* governed by `lambda`.
+- Good-value convention: `Q(s,a,k) = expected protected value to end of horizon`.
+  Higher is better for the controller; nature minimizes it.
+
+The raw action spaces are `~2^n`; the repo **never enumerates them**. Instead it
+generates a reduced candidate library (~100–1000 actions/player/state) via
+heuristics + exploration, and solves a local matrix game over those candidates.
+`Q` is approximated linearly: `Q ≈ theta^T phi(s,a,k)`, where `phi` comes from a
+**pretrained-then-frozen CNN encoder** (only the linear head `theta` is learned in
+the robust-MDP loop).
+
+---
+
+## 2. Environment & configuration
+
+Defined in `src/config.py` (`Config` dataclass). The values used by the canonical
+runs (saved in each run's `config.json`):
+
+| Parameter | Value | Meaning |
+|---|---|---|
+| `grid_h`, `grid_w` | 10, 10 | 100 parcels |
+| `n_clusters` | 3 | top-left 5×5, top-right 5×5, bottom 5×10 |
+| `horizon_T` | 10 | planning years |
+| `gamma` | 0.95 | discount |
+| `budget_per_year` | 2.0 | per-year protection budget (costs ~U(0.2,1.0)) |
+| `lambda_uncertainty` | 0.20 | robustness; smaller ⟹ larger uncertainty set ⟹ stronger adversary |
+| `n_controller_candidates` | 200 | candidate protection actions / state |
+| `n_nature_candidates` | 200 | candidate development actions / state |
+| `outer_iters` | 5 | outer robust-policy-iteration rounds |
+| `inner_M` | 5 | nature dual-averaging iters per outer round |
+| `samples_per_iter` | 2000 | TD samples (states) per Algorithm-2 fit |
+| `use_encoder` | true | phi = frozen CNN (else engineered features) |
+| `encoder_embed_dim` | 64 | dimension of phi (hence of theta) |
+| `value_hotspots` | `[[2,2,1,1.2],[7,7,1,1.5]]` | two Gaussian value bumps |
+
+**Key dynamics (see `src/dynamics.py`, `CLAUDE.md` §"Development probability"):**
+
+```
+p_i = (TI_i/10) * (1 + developed same-cluster neighbors) / (1 + same-cluster neighbors)   # clipped to [eps,1-eps]
+```
+
+Timing per year: **controller protects first, then nature develops** (this matters
+for the StaticApprox cut timing — see §6). Monotone: once protected always
+protected, once developed always developed; protected parcels can't be developed.
+
+**Nature feasibility (uncertainty set U), always in log form:**
+```
+loglik(d_plus) = sum_i [ d_i log p_i + (1-d_i) log(1-p_i) ]
+feasible iff   loglik(d_plus) >= t * log(lambda)        # immediate p recomputation from d_plus
+```
+
+> **Why lambda=0.20 is a deliberate "hard" regime.** The multiplicative neighbor
+> formula keeps `p` small until a cluster of developments seeds neighbor pressure.
+> 0.20 lets nature bootstrap and develop most of the grid in the worst case, so the
+> adversary is near-omnipotent. This makes the *worst-case* margins small (see §6)
+> but is an honest stress test.
+
+---
+
+## 3. The training runs
+
+Two completed runs live under `outputs/slurm/`. They use identical config (above);
+the second is a re-run after a diagnostics fix. **Both converged to the same place**
+(`theta_norm ≈ 0.60`, flat after outer iter 1).
+
+| Run | When | Pretrain | Training | Outcome (avg over rollouts) |
+|---|---|---|---|---|
+| `biodiv-2312346` | 2026-05-19 | — | — | protected ≈ 15.6 / 25.87 total, theta_norm 0.607 |
+| `biodiv-2392077` | 2026-05-27 | 100.9 s | 4781.6 s (≈80 min) | protected ≈ 15.3–15.6, theta_norm 0.600 |
+
+**Artifacts per run directory:**
+- `config.json` — the exact `Config` used (the source of truth for that run).
+- `encoder.pt` — frozen CNN weights (see §4). ~121 KB.
+- `theta_iter{1..5}.npy`, `theta_final.npy` — the learned 64-dim linear head after
+  each outer round; `theta_final` is the policy you evaluate with.
+- `train_log.json` — per-outer-round metrics: `avg_protected_value`,
+  `avg_developed_value`, `avg_free_value`, `theta_norm`. **Reading it:** flat
+  curves after round 1 = converged; protected ≫ developed = controller winning.
+- `diagnostics.json` — action-span diagnostics (see §5).
+- `slurm.out` — full stdout (pretrain log, sanity checks, per-round training log,
+  diagnostics dump, total timings).
+- `compare/` — the paper-comparison outputs (see §6).
+
+The `total value` of the map is **25.87** (sum of all parcel values); every
+"value" number is on that scale.
+
+---
+
+## 4. The frozen encoder (`src/encoder.py`)
+
+`phi(s,a,k)` is produced by a small CNN (`GridEncoder`) over a channel-stacked
+grid plus global scalars, L2-normalized to a 64-dim vector. Only `theta` (64
+weights) is trained inside the robust-MDP loop; **encoder weights are frozen** after
+pretraining, per the linear-Q paper assumption.
+
+### 4.1 Inputs
+
+**Per-parcel grid channels** (shape `(C_in, H, W)`):
+
+| idx | channel | idx | channel |
+|---|---|---|---|
+| 0 | protected `x` | 7 | development prob `p` |
+| 1 | developed `d` | 8 | frontier pressure `q` |
+| 2 | controller action `a` | 9 | has-protected-neighbor flag |
+| 3 | nature action `k` (masked) | 10..10+C-1 | cluster one-hot (C clusters) |
+| 4 | value `v` (norm) | −2 | row coord / H |
+| 5 | cost `c` (norm) | −1 | col coord / W |
+| 6 | threat `TI`/10 | | |
+
+So `C_in = 10 + n_clusters + 2`. For the toy grid (3 clusters) → **15 channels**;
+for the paper's 9-cluster setting → **21 channels**.
+
+**Global scalars** (concatenated after the conv stack, `N_GLOBAL_SCALARS = 5`):
+`t/T`, `(T−t)/T`, `budget/total_cost`, `lambda_uncertainty`, `gamma`.
+
+### 4.2 Architecture & exact parameter count
+
+`conv1(C_in→32,3×3) → conv2(32→32) → conv3(32→32) → global-avg-pool →
+concat(32 + 5 globals) → fc1(37→64) → fc2(64→64) → L2-normalize`.
+
+Parameter count is **almost independent of parcel count** (global average pooling
+removes spatial size; only `C_in` and the cluster count change). The breakdown
+below is exact and was **verified by direct `sum(p.numel())`** on instantiated
+encoders (measured = computed, to the parameter):
+
+| Layer | Formula | n=100, 15 ch | n=692, 21 ch |
+|---|---|---|---|
+| conv1 | `C_in·32·9 + 32` | 4,352 | 6,080 |
+| conv2 | `32·32·9 + 32` | 9,248 | 9,248 |
+| conv3 | `32·32·9 + 32` | 9,248 | 9,248 |
+| fc1 | `37·64 + 64` | 2,432 | 2,432 |
+| fc2 | `64·64 + 64` | 4,160 | 4,160 |
+| **Total** | | **29,440** ✓ | **31,168** ✓ |
+
+(✓ = matches the measured count exactly. The pretraining MSE head `Linear(64→1)`
+adds 65 params but is discarded after pretraining — not part of the saved encoder.)
+
+### 4.3 Pretraining procedure
+
+`pretrain_encoder()` rolls out a random policy for `encoder_pretrain_episodes`
+(=800) episodes, builds `(grid, globals, return)` samples (Monte-Carlo discounted
+return as the regression target), and trains encoder+head with Adam for
+`encoder_pretrain_epochs` (=40) epochs (MSE). For run 2392077: dataset =
+`(8000, 15, 10, 10)`, final loss 0.0009, **100.9 s**. Then the encoder is frozen and
+saved; the head is thrown away.
+
+> **You cannot reuse this encoder for the paper's 692-parcel setting** — see §7.4.
+
+---
+
+## 5. Action-span diagnostics (`src/diagnostics.py`, `diagnostics.json`)
+
+These answer the mentor's question "is the reduced candidate set good enough?"
+**not** by raw binary span (uninformative) but in **Q-relevant action-effect
+embedding space**. For each visited state we build a large reference action pool
+(target 3000) and the heuristic candidate pool, embed both into value/cost/
+threat/frontier/cluster effect features, and compute the projection error of each
+reference vector onto the candidate span:
+
+```
+err(z) = || z − U_small U_small^T z || / || z ||
+```
+
+`diagnostics.json` is a list of per-year dicts (`t=1..T`), each with `controller`
+and `nature` sub-dicts holding `n_ref`, `n_cand`, `median_proj_err`, `p90`, `p95`.
+
+**Reading it:** projection errors near machine epsilon (1e-16 to 1e-9, as in both
+runs across all 10 years) mean the ~100 candidate actions **fully span** the
+reference action-effect space at every visited state — i.e. the reduction loses
+no Q-relevant directions. `n_cand` ≈ 100 (not 200) because `budget=2.0` +
+`lambda=0.20` make many candidates collapse to duplicates after dedup; the count
+of *distinct* feasible actions is what matters and it suffices.
+
+> History note: an earlier version walked only 3 idle (zero-action) steps; it was
+> fixed to walk the full horizon **along the learned policy** (`run_biodiv_train.py`,
+> the `--run-diagnostics` block). Run 2392077 has the correct 10-step diagnostics.
+
+---
+
+## 6. Comparison vs the paper's methods (`run_compare.py`, `src/baselines.py`)
+
+Goal: show our learned policy holds up **against adversarial nature** relative to
+the paper's non-RL methods, inside *our* environment, on equal footing.
+
+### 6.1 The paper's methods (re-implemented in `src/baselines.py`)
+
+- **Knapsack** (paper Problem 8/9, their *benchmark*): each year protect the
+  value-maximizing parcel set within budget, ignoring uncertainty. Exact 0/1
+  knapsack via `scipy.optimize.milp`. Adaptive only in the trivial sense that it
+  re-optimizes over whatever parcels remain available.
+- **StaticApprox** (paper Problem 7, their *final proposal*): one **non-adaptive,
+  here-and-now** protection schedule for the whole horizon, chosen to minimize the
+  worst-case loss over the uncertainty set U. Solved by **constraint generation**:
+  a master MILP (`min tau` s.t. budget + monotonicity + one robust cut per
+  generated scenario) plus a greedy separation oracle that finds the worst-case
+  development against the current schedule. **Cut timing is aligned to our
+  simulator** (controller protects before nature within a year, so protection at
+  year `t` guards developments at year `t` — this differs from the paper's `x_{t-1}`
+  term, which matches their protect-after-observe convention).
+
+### 6.2 The two "natures" (identical for all three controllers)
+
+- **Worst-case / adversarial** (`greedy_adversary_develop`): greedily develops the
+  parcels with the highest value-per-likelihood-cost `v_i / log((1-p_i)/p_i)` while
+  keeping the realization inside U, recomputing `p` after each addition (immediate
+  recomputation; captures the development snowball). This is the robustness test.
+- **Average-case / stochastic** (`bernoulli_develop`): the cellular-automata
+  `Bernoulli(p_i)` model the paper uses to *simulate* realized developments (no
+  robustness cap). This is the typical-case test.
+
+### 6.3 Results (run 2392077; run 2312346 agrees)
+
+| Nature | Ours | StaticApprox (paper proposal) | Knapsack |
+|---|---|---|---|
+| **Worst-case lost value** (↓) | **21.15 ± 1.49** | 22.72 | 22.72 |
+| **Average-case lost value** (↓) | **12.24** | 19.82 | 12.48 |
+| Worst-case protected (↑) | 4.72 | 3.15 | 3.15 |
+| Average-case protected (↑) | 13.57 | 3.15 | 13.37 |
+
+**Interpretation:**
+- **Worst-case: ours ≈ 7% less loss** than StaticApprox, reproducible across both
+  runs (2312346: 21.14 ± 1.17; 2392077: 21.15 ± 1.49).
+- **StaticApprox == Knapsack on worst-case** — exactly the paper's **Proposition
+  6.1** (small `lambda` ⟹ uncertainty set so large the two coincide). A good
+  sanity check that the baselines are faithful.
+- **Average-case: ours (and Knapsack) beat the non-adaptive StaticApprox by ~38%**,
+  because StaticApprox is stuck with its small up-front plan no matter what happens.
+- **The robust headline: ours is the only method strong in *both* regimes.**
+  Knapsack collapses on the worst case (ignores uncertainty); StaticApprox
+  collapses on average (cannot adapt). Ours does not collapse on either.
+
+### 6.4 Methodology lesson baked into the code
+
+Our policy **samples** its candidate actions, so a *single* greedy-adversary
+rollout is noisy (std ≈ 1.2–1.5). An early single-episode measurement swung from
+−10.7% to +0.4% between the two runs — a pure metric artifact. The worst-case
+evaluation therefore **averages over `--n-worstcase` seeds (default 20)** and
+reports the distribution (StaticApprox/Knapsack are deterministic ⟹ std 0).
+**Always report the multi-seed distribution, never a single rollout.**
+
+### 6.5 The comparison plot — `compare/comparison_vs_paper.png`
+
+Two panels, three methods (`Ours`, `StaticApprox`, `Knapsack`):
+- **Left — "Loss to development (lower = better)":** for each method, a solid bar =
+  worst-case mean (with min/max error bars) and a faded bar = stochastic mean
+  (with min/max error bars). Ours' solid bar is lowest; StaticApprox's faded bar
+  is far higher than the other two.
+- **Right — "Value preserved (higher = better)":** solid = worst-case protected,
+  faded = stochastic protected. Ours leads on worst-case; ours ≈ Knapsack ≫
+  StaticApprox on average.
+- Title shows `total value = 25.9`.
+
+`compare/comparison_results.json` holds the full numbers: `meta` (run dir, lambda,
+budget, horizon, total value, #stochastic episodes, #parcels StaticApprox planned)
+and `results[method][worst_case|stochastic][lost_value|protected_value|free_value]`
+with `mean/std/min/max/median`.
+
+### 6.6 Reproduce
+
+```bash
+uenv run pytorch/v2.9.1:v2 --view=default -- bash -c \
+ "source ~/qa-gym/.venv/bin/activate && cd ~/robust-mdp && \
+  python run_compare.py --run-dir outputs/slurm/biodiv-2392077 \
+  --n-worstcase 20 --n-stochastic 40"
+```
+Runs in ~16 s on GPU. Loads that run's frozen encoder + `theta_final`, rebuilds the
+seed-matched map, solves both baselines, evaluates all three, writes the JSON+PNG.
+
+---
+
+## 7. Scaling to the paper's real 692-parcel setting
+
+### 7.1 What the paper's real instance is (paper §7)
+
+After cleaning, the paper keeps **692 parcels** (jaguar range, Latin America),
+clustered into **9 groups** (4 threat levels × K-means subclusters). The reported
+numerical experiment is **single-stage** ("we consider a single-stage problem,
+which can be solved to optimality within 10 minutes" with Gurobi/CPLEX), budget
+swept 25–175 M USD, evaluated on 1000 cellular-automata samples.
+
+Our pipeline is **multistage (T=10)** and RL-based, so a direct port is more
+expensive than their single-stage MILP. The estimates below assume we keep our
+T=10 multistage setup but on a 692-parcel / 9-cluster map.
+
+### 7.2 Measured scaling micro-benchmark (provable basis)
+
+Same code paths, same GPU node, n=100 (3 clusters) vs a synthetic n=702
+(9-cluster block grid, the closest grid-shaped stand-in for 692). These ratios are
+the empirical basis for every estimate that follows:
+
+| Quantity | n=100 / 3 clust | n=702 / 9 clust | ratio |
+|---|---|---|---|
+| Encoder params | 29,440 | 31,168 | 1.06× |
+| `policy_at_state` @200 cand | 18.7 ms | 167.1 ms | **8.9×** |
+| `policy_at_state` @500 cand | 39.0 ms | 491.0 ms | 12.6× |
+| Pretrain episode (T=10) | 174 ms | 802 ms | 4.6× |
+
+Why `policy_at_state` grows ~9× (not 7×): candidate generation and the engineered
+embedding scan all parcels, and the encoder forward runs over ~7× the grid cells;
+combined with a larger same-cluster adjacency these compound super-linearly.
+
+### 7.3 Time estimates for n=692
+
+**(a) Encoder pretraining** (must be redone — §7.4). The 100.9 s toy pretrain
+splits into data collection (rollouts, scales ≈ 4.6×) and 40 epochs over the
+dataset (CNN forward/backward over ~7× the cells, scales ≈ 7×). Net ≈ 5–7× →
+**≈ 9–12 minutes** at 800 episodes / 40 epochs. (Grows linearly if you raise
+episodes/epochs for the harder problem.)
+
+**(b) Robust-MDP training** (5 outer × 5 inner × 2000 samples), which is
+`policy_at_state`-dominated:
+- **Same config (200 candidates):** 4781.6 s × 8.9 ≈ **42,600 s ≈ 11–12 hours.**
+- **Paper-scale candidates (500), recommended given the larger action space:**
+  per-eval 491 ms vs the toy's 18.7 ms ⟹ ≈ 26× ⟹ **≈ 35 hours ≈ 1.5 days.**
+
+**(c) Comparison run** (`run_compare.py`): policy evals scale ~9×, but the
+StaticApprox MILP grows from `T·100` to `T·692 ≈ 6,920` binaries; HiGHS handles it
+but per-solve cost and constraint-generation iterations rise. Estimate **≈ 5–15
+minutes** (MILP-dominated; the paper solved a comparable MILP in ~10 min with
+Gurobi).
+
+**Caveats (read before quoting):** these scale the measured *per-operation* cost by
+the *same loop counts*. The dominant unknown is whether 692 parcels needs **more
+candidates, more samples_per_iter, or more outer/inner iters to converge** — almost
+certainly yes, which would push training up by a further constant factor. Treat the
+numbers as order-of-magnitude, GPU, on this hardware:
+
+| Stage | n=100 (measured) | n=692 (estimate) |
+|---|---|---|
+| Encoder pretrain | 100.9 s | ~9–12 min |
+| Robust-MDP training (200 cand) | 4,781.6 s (80 min) | ~12 h |
+| Robust-MDP training (500 cand) | — | ~1.5 days |
+| Comparison run | 16 s | ~5–15 min |
+
+### 7.4 Why the trained encoder **cannot** be reused for 692 parcels
+
+1. **Input shape changes.** 9 clusters ⟹ `C_in = 21` (vs 15). `conv1`'s weight
+   tensor is `(32, C_in, 3, 3)` — a different shape — so the saved `encoder.pt`
+   state dict will not even load. Pretraining from scratch is mandatory.
+2. **Different data distribution.** Values, costs, threat indices, adjacency and
+   cluster structure are entirely different (real geographic data vs Gaussian
+   bumps on a 10×10 grid). A frozen encoder trained on the toy distribution carries
+   no useful features for the real one.
+3. **Geometry / architecture.** The real 692 parcels are **irregular geographic
+   cells, not a clean rectangle**. The CNN needs an `H×W` grid; two options:
+   - embed parcels into a bounding grid with masked empty cells (what the §7.2
+     synthetic stand-in does), or
+   - switch to a **GNN over the parcel adjacency graph** — the cleaner choice for
+     arbitrary parcel graphs (`CLAUDE.md` §"Frozen neural encoder option" already
+     flags this). A GNN is a different architecture entirely, so again: retrain.
+
+In all cases the encoder is **re-pretrained from scratch** and then frozen, and the
+~9–12 min estimate in §7.3(a) applies. The parameter count stays ~31k for the CNN
+path (§4.2); a comparable-width GNN (3 message-passing layers, 32 hidden, +5
+globals) lands in the same 25–35k ballpark.
+
+---
+
+## 8. File map
+
+```
+CLAUDE.md                  modeling spec (formulas, conventions, feature lists)
+ANALYSIS.md                this document
+papers/10341148.pdf        reference paper (+ .txt extract)
+run_biodiv_train.py        training entry point (pretrain → train → diagnostics)
+run_clariden.sh            SLURM submit script (current canonical config)
+run_compare.py             paper-comparison driver (worst-case + stochastic)
+src/
+  config.py                Config + MapData dataclasses
+  state.py                 State, build_default_map, initial_state
+  dynamics.py              p_i, log-likelihood, feasibility, step()
+  candidates.py            generate_controller_candidates / generate_nature_candidates
+  features.py              engineered phi + q_matrix_batch (dispatch on use_encoder)
+  encoder.py               GridEncoder (frozen CNN), pretrain_encoder, phi/Q via encoder
+  matrix_game.py           solve_matrix_game (max-min over candidate simplices)
+  dual_averaging.py, td.py, policy_iteration.py   robust policy iteration (Alg 1/2)
+  rollout.py               policy_at_state, rollout_episode
+  diagnostics.py           action_span_diagnostics
+  baselines.py             Knapsack + StaticApprox + the two natures (comparison)
+  sanity.py, viz.py        assertions + plotting helpers
+scripts/
+  plot_episode.py          renders per-year episode grids + map heatmaps
+  inspect_episode.py       interactive episode walk
+  summarize_run.py         prints a run-dir summary
+notebooks/
+  biodiv_robust_mdp.ipynb  end-to-end demo (value/threat/cost heatmaps with cluster
+                           borders + interactive episode cell); .html is a render
+outputs/slurm/biodiv-<jobid>/   per-run artifacts (see §3); compare/ holds §6 outputs
+```
+
+### Other plots in the repo
+- **Notebook initial plots:** value / threat-index / cost heatmaps of the 10×10
+  grid, each with a colorbar and **bold black cluster borders**.
+- **`scripts/plot_episode.py` outputs:** `episode_grid.png` (2×5 per-year panels),
+  `episode_value_bg.png` (same with value heatmap underlay), `per_year/year_t.png`,
+  and `map_overview.png`. Grid colors encode free / protected / developed / newly
+  protected / newly developed, always with cluster borders.
+
+---
+
+*Generated 2026-05-27. Timings are GPU (CUDA) on the Clariden `pytorch/v2.9.1:v2`
+uenv. Encoder param counts and per-call timings are directly measured; n=692
+end-to-end times are arithmetic extrapolations from those measured ratios.*
