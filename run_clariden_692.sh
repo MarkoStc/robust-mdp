@@ -38,7 +38,7 @@ nvidia-smi || true
 #   ~0.2 s/TD-sample, pretrain ~12 min, training ~2.5-3 h  => ~3 h total.
 python -u run_biodiv_train.py \
   --grid-h 4 --grid-w 173 \
-  --n-cluster-rows 1 --n-cluster-cols 4 \
+  --n-cluster-rows 3 --n-cluster-cols 3 \
   --lambda-uncertainty 0.20 \
   --budget-per-year 14.0 \
   --samples-per-iter 2000 \
