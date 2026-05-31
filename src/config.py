@@ -29,6 +29,13 @@ class Config:
     n_nature_candidates: int = 500
     candidate_seed: int = 0
 
+    # Cluster tiling for non-default grids. The 10x10 toy keeps its hand-defined
+    # 3-cluster layout (see build_default_map). For any other (grid_h, grid_w),
+    # the grid is tiled into n_cluster_rows x n_cluster_cols rectangular clusters.
+    # 0 means "auto" (a single row of blocks, count chosen in build_default_map).
+    n_cluster_rows: int = 0
+    n_cluster_cols: int = 0
+
     # Outer / inner loop sizes
     outer_iters: int = 10
     inner_M: int = 8                  # nature dual-averaging iters

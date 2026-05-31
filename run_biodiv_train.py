@@ -26,6 +26,14 @@ def parse_args() -> argparse.Namespace:
     ap.add_argument("--horizon-T", type=int, default=10)
     ap.add_argument("--gamma", type=float, default=0.95)
     ap.add_argument("--budget-per-year", type=float, default=2.0)
+    ap.add_argument("--grid-h", type=int, default=10)
+    ap.add_argument("--grid-w", type=int, default=10)
+    ap.add_argument("--n-cluster-rows", type=int, default=0,
+                    help="cluster tiling rows for non-10x10 grids (0=auto)")
+    ap.add_argument("--n-cluster-cols", type=int, default=0,
+                    help="cluster tiling cols for non-10x10 grids (0=auto)")
+    ap.add_argument("--fixed-p-feasibility", action="store_true",
+                    help="use frozen-p (approximate) nature feasibility; default is exact immediate-p")
     ap.add_argument("--rollout-episodes", type=int, default=20)
     ap.add_argument("--td-step-eta", type=float, default=0.02)
     ap.add_argument("--td-skip-tau", type=int, default=2)
@@ -56,6 +64,11 @@ def main():
         horizon_T=args.horizon_T,
         gamma=args.gamma,
         budget_per_year=args.budget_per_year,
+        grid_h=args.grid_h,
+        grid_w=args.grid_w,
+        n_cluster_rows=args.n_cluster_rows,
+        n_cluster_cols=args.n_cluster_cols,
+        fixed_p_feasibility=args.fixed_p_feasibility,
         rollout_episodes=args.rollout_episodes,
         td_step_eta=args.td_step_eta,
         td_skip_tau=args.td_skip_tau,

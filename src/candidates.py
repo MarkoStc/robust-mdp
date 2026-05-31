@@ -1,5 +1,6 @@
 """Reduced-action candidate generation for controller and nature."""
 from __future__ import annotations
+import math
 import numpy as np
 
 from .config import Config, MapData
@@ -54,12 +55,13 @@ def _stochastic_greedy_nature(scores: np.ndarray, mask_available: np.ndarray,
                               rng: np.random.Generator, temperature: float = 1.0,
                               log_ratio: np.ndarray | None = None,
                               slack_baseline: float | None = None) -> np.ndarray:
-    """Greedy nature: walk parcels in Gumbel-perturbed score order, adding each that
-    keeps the cumulative log-likelihood-ratio above the t*log(lambda) cutoff.
+    """Greedy nature (FROZEN-p fast path): walk parcels in Gumbel-perturbed score
+    order, adding each that keeps the cumulative log-likelihood-ratio above the
+    t*log(lambda) cutoff, using state-only p (precomputed log_ratio).
 
-    Uses state-only p (precomputed log_ratio) so feasibility decisions are O(1) per
-    parcel — gives the same constraint up to the small drift induced by neighbor
-    re-evaluation, which we accept for candidate generation speed.
+    This is the O(1)-per-parcel approximation used only when
+    ``cfg.fixed_p_feasibility`` is True. The default exact path is
+    ``_stochastic_greedy_nature_exact`` below.
     """
     n = scores.shape[0]
     k = np.zeros(n, dtype=np.int8)
@@ -88,6 +90,81 @@ def _stochastic_greedy_nature(scores: np.ndarray, mask_available: np.ndarray,
         if slack + lr >= 0:
             k[j] = 1
             slack += lr
+    return k
+
+
+def _stochastic_greedy_nature_exact(scores: np.ndarray, mask_available: np.ndarray,
+                                    state: State, map_data: MapData, cfg: Config,
+                                    rng: np.random.Generator,
+                                    temperature: float = 1.0) -> np.ndarray:
+    """Greedy nature with EXACT immediate-p feasibility (CLAUDE.md default).
+
+    Feasibility uses the relative log-likelihood slack evaluated on the *current*
+    development pattern with p recomputed from it (immediate recomputation):
+
+        slack(d) = sum_{i: d_i=1} log( p_i(d) / (1 - p_i(d)) ) - t * log(lambda)
+
+    where p_i(d) = (TI_i/10) * (1 + dev_neighbors_i(d)) / (1 + neighbors_i).
+
+    Developing parcel j only changes p for j's same-cluster neighbors, so we
+    maintain the developed-neighbor counts and the running slack incrementally in
+    O(deg(j)) per accepted/tested parcel rather than recomputing over all n. This
+    is exact (matches dynamics.likelihood_slack with fixed_p_feasibility=False),
+    not an approximation.
+    """
+    n = scores.shape[0]
+    k = np.zeros(n, dtype=np.int8)
+    if not mask_available.any():
+        return k
+
+    eps = cfg.eps
+    threat = (map_data.threat / 10.0).astype(np.float64)
+    deg = map_data.deg.astype(np.float64)
+    neighbors = map_data.neighbors
+
+    dev = state.d.astype(np.int8).copy()
+    # developed-neighbor count per parcel (same-cluster), float for arithmetic
+    dev_neigh = (map_data.adj @ dev.astype(np.float64))
+
+    def log_ratio_of(i: int, extra: float = 0.0) -> float:
+        # log(p/(1-p)) for parcel i with (dev_neigh[i] + extra) developed neighbors
+        p = threat[i] * (1.0 + dev_neigh[i] + extra) / (1.0 + deg[i])
+        if p < eps:
+            p = eps
+        elif p > 1.0 - eps:
+            p = 1.0 - eps
+        return math.log(p / (1.0 - p))
+
+    # current slack over already-developed parcels
+    slack = -state.t * math.log(cfg.lambda_uncertainty)
+    for i in np.where(dev == 1)[0]:
+        slack += log_ratio_of(int(i))
+
+    if temperature > 0:
+        perturbed = scores + rng.gumbel(0.0, 1.0, size=n) * max(1e-6, temperature)
+    else:
+        perturbed = scores.copy()
+    perturbed = np.where(mask_available, perturbed, -np.inf)
+    order = np.argsort(-perturbed)
+
+    for j in order:
+        j = int(j)
+        if not mask_available[j] or dev[j] == 1:
+            continue
+        # delta to slack if we develop j: j's own term (its dev_neigh is unchanged
+        # by developing itself) plus the increase for each already-developed neighbor
+        # whose developed-neighbor count rises by 1.
+        delta = log_ratio_of(j)
+        for m in neighbors[j]:
+            m = int(m)
+            if dev[m] == 1:
+                delta += log_ratio_of(m, extra=1.0) - log_ratio_of(m)
+        if slack + delta >= 0:
+            k[j] = 1
+            dev[j] = 1
+            slack += delta
+            for m in neighbors[j]:
+                dev_neigh[int(m)] += 1.0
     return k
 
 
@@ -226,10 +303,17 @@ def generate_nature_candidates(state: State, a_protect: np.ndarray,
         return np.stack(_dedup(actions), axis=0)
 
     def gen_one(score, temperature):
-        return _stochastic_greedy_nature(
+        if cfg.fixed_p_feasibility:
+            # frozen-p fast path (approximate); kept for ablations
+            return _stochastic_greedy_nature(
+                score, available, tent, map_data, cfg, rng,
+                temperature=temperature,
+                log_ratio=log_ratio, slack_baseline=slack_baseline,
+            )
+        # exact immediate-p feasibility (default, coherent with the paper)
+        return _stochastic_greedy_nature_exact(
             score, available, tent, map_data, cfg, rng,
             temperature=temperature,
-            log_ratio=log_ratio, slack_baseline=slack_baseline,
         )
 
     n_sweep = max(50, target // 4)
