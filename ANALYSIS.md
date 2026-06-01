@@ -14,6 +14,14 @@ Companion documents:
 All timing numbers below were measured on the Clariden cluster GPU node
 (`uenv pytorch/v2.9.1:v2`, CUDA), the same hardware the runs used.
 
+> **Status note (2026-06-01).** §§2–6 describe the original published runs
+> (`biodiv-2312346`, `biodiv-2392077`) on the `main` branch. Branch
+> `exact-nature-feasibility` then (a) made nature's candidate feasibility **exact
+> immediate-p** instead of the frozen-p approximation, and (b) added arbitrary-grid
+> support for the paper's **692-parcel** count. The new feature-interpretation
+> findings are in **§9**; the exact-nature change and the in-progress 692 / exact
+> re-runs are in **§10**. Read those two sections for what is current.
+
 ---
 
 ## 1. What this repo is
@@ -73,6 +81,14 @@ protected, once developed always developed; protected parcels can't be developed
 loglik(d_plus) = sum_i [ d_i log p_i + (1-d_i) log(1-p_i) ]
 feasible iff   loglik(d_plus) >= t * log(lambda)        # immediate p recomputation from d_plus
 ```
+
+> The environment `step` and the adversary always used immediate-p. **Candidate
+> generation** originally used a frozen-p fast path (probabilities from the current
+> `d`, not updated as parcels are added) for speed. On branch
+> `exact-nature-feasibility` candidate generation now uses **exact immediate-p**
+> too (incremental O(deg) neighbour updates), so the entire pipeline matches the
+> rule above; `fixed_p_feasibility=True` restores the old approximation for
+> ablations. See §10.
 
 > **Why lambda=0.20 is a deliberate "hard" regime.** The multiplicative neighbor
 > formula keeps `p` small until a cluster of developments seeds neighbor pressure.
@@ -381,14 +397,150 @@ globals) lands in the same 25–35k ballpark.
 
 ---
 
-## 8. File map
+## 9. Encoder feature interpretation (`tools/analyze_features.py`)
+
+Two analyses of the **frozen encoder's learned features `phi`**, run on the
+existing trained model `biodiv-2312346` (n=100). Both write
+`<run-dir>/feature_analysis.json`. Reproduce:
+
+```bash
+uenv run pytorch/v2.9.1:v2 --view=default -- bash -c \
+ "source ~/qa-gym/.venv/bin/activate && cd ~/robust-mdp && \
+  python tools/analyze_features.py --run-dir outputs/slurm/biodiv-2312346 --n-episodes 200"
+```
+
+The tool rolls out 200 episodes under the trained policy (controller = argmax of
+`pi`, nature sampled from `omega`), recording each visited `(s,a,k)` plus its
+Monte-Carlo discounted **return** `y` (the real surviving-value-to-end, i.e.
+ground truth, **not** a model estimate). N = 2000 situations.
+
+### 9.1 Q-fit: encoder `phi` vs engineered `phi` (held-out R²)
+
+Fit Ridge twice on the same buffer with a 75/25 train/held-out split; target is
+the real return `y`. "Held-out R²" = how well `theta·phi` predicts the true
+future value on situations the fit never saw (1.0 = perfect, 0 = no better than
+the mean).
+
+| features | dim | train R² | **held-out R²** |
+|---|---|---|---|
+| encoder (frozen CNN) | 64 | 0.9873 | **0.9866** |
+| engineered (`CLAUDE.md` list) | 847 | 0.9954 | **0.9923** |
+
+Gap (encoder − engineered) = **−0.0057** ⟹ a **tie** (engineered marginally
+better). **Both predict the true return at R² ≈ 0.99**, so on the states the game
+actually visits `Q ≈ theta·phi` is a near-perfect linear fit either way — but the
+fancy encoder buys **nothing** over the cheap hand-engineered features.
+
+### 9.2 Effective rank of the encoder `phi` (SVD)
+
+Collect `phi` over the buffer (2000 × 64), centre, take the singular-value
+spectrum. The encoder ends in **global average pooling** (`encoder.py`: `h.mean(dim=(-1,-2))`),
+which averages each feature map over all parcels and is the prime suspect for
+feature collapse.
+
+| metric | value (nominal 64) |
+|---|---|
+| participation ratio | **1.08** |
+| Shannon effective rank | 1.22 |
+| dims for 90% energy | **1** |
+| dims for 99% energy | 2 |
+| top-3 energy fractions | 0.960, 0.033, 0.005 |
+
+**Severe collapse:** the 64-dim fingerprint is effectively **one number** (one
+direction holds 96% of the variance). The toy's value function is so well captured
+by a single summary scalar that the encoder never needed more.
+
+### 9.3 What this does and does NOT mean
+
+- It does **NOT** mean the policy is broken. Verified independently: under the
+  worst-case adversary (20 seeds, same map), the **trained** policy protects
+  **4.92** of 25.87 total value vs **0.00** for an untrained `theta=0` policy, and
+  it beats StaticApprox/Knapsack (§6). The collapsed-feature model is the same one
+  that wins those comparisons.
+- It **does** mean the encoder is **over-provisioned for this toy**: a much
+  simpler fixed feature map (the engineered one) does the same job. This is a
+  direct, useful argument for the 692 plan — using engineered features there would
+  skip encoder pretraining entirely, dodge the "can't reuse the encoder" problem
+  (§7.4), and be **more** faithful to the paper's fixed-linear-feature assumption.
+- Caveat: collapse to ~1 effective dimension is partly a property of the **easy
+  toy** (n=100, 3 clusters). The 692 / 9-cluster setting has real spatial structure
+  and should need more effective dimensions; re-running this analysis on the new
+  runs (§10) will show whether that holds.
+
+---
+
+## 10. Exact nature feasibility + 692-parcel setting (branch `exact-nature-feasibility`)
+
+### 10.1 The exact-nature change
+
+`src/candidates.py::_stochastic_greedy_nature_exact` replaces the frozen-p
+approximation as the **default** for nature candidate generation. It enforces the
+exact relative-slack feasibility (immediate-p), maintained **incrementally** via
+sparse same-cluster neighbour updates — O(deg) ≈ O(4) per parcel, not O(n²). This
+makes the whole pipeline (generation + step + adversary) coherent with the paper's
+likelihood uncertainty set and with `CLAUDE.md`'s "immediate recomputation"
+default. The old frozen-p path is preserved behind `cfg.fixed_p_feasibility=True`
+for ablations. Sanity (`src/sanity.py`) now asserts every generated candidate is
+exactly feasible. (Note: because developing parcels only *raises* neighbours' `p`
+and the relative slack sums only over developed parcels, frozen-p was already a
+conservative under-estimate — so this change tightens correctness without
+invalidating the earlier runs' conclusions.)
+
+### 10.2 Arbitrary-grid map support
+
+`src/state.py::_assign_clusters` generalises `build_default_map` to any
+`(grid_h, grid_w)` via rectangular cluster tiling (`--n-cluster-rows/-cols`), with
+per-cluster auto-placed value hotspots. The 10×10 / 3-cluster toy layout is
+unchanged. New CLI flags in `run_biodiv_train.py`: `--grid-h/-w`,
+`--n-cluster-rows/-cols`, `--fixed-p-feasibility`.
+
+### 10.3 The 692-parcel run (`run_clariden_692.sh`)
+
+We do **not** have the paper's real land dataset, so the map is **synthetic but
+matches the paper's parcel count and cluster count**: a **4×173 grid = exactly 692
+cells** (no masking), tiled into **3×3 = 9 contiguous clusters** (verified: 9
+non-empty clusters of size 57–116, **zero cross-cluster neighbour leak**, total
+value ≈ 59.2). `budget=14.0` (≈7× the toy's 2.0, to keep a comparable protected
+fraction), `lambda=0.20` (kept for consistency with the n=100 runs), encoder
+pretrain 800 ep / 40 epoch, 200 candidates/side, 5 outer × 5 inner × 2000 samples.
+
+### 10.4 Measured timing @692 (login GPU probe, exact nature, 200 cand)
+
+| Quantity | n=692, 9 clusters |
+|---|---|
+| Encoder params | 29,728 (matches §4.2 formula for 9 clusters / 21 channels) |
+| Exact nature-gen | ~26 ms/call (frozen-p path ~6 ms) |
+| Encoder `q_matrix_batch` (~111×101) | ~58 ms |
+| TD per-sample (`fit_linear_q`) | ~1.3 s/sample |
+| Pretrain | ~68 s (mini probe); full 800 ep ≈ 9–12 min |
+
+The full 692 run is projected at **~3 h** end-to-end — comfortably inside the
+8 h `normal` wall cap, confirming the §7.3 upper estimates were conservative (they
+assumed 500 candidates; at 200 the cost is only ~2× the toy, not ~12×).
+
+### 10.5 Status (in progress)
+
+Two SLURM jobs submitted on this branch:
+- **2441623** — n=100 exact-nature re-run (else identical to 2312346/2392077, so
+  the only change vs the published runs is the exact constraint; clean
+  apples-to-apples).
+- **2441645** — n=692, 9 clusters, exact nature, frozen encoder.
+
+Pending the paper comparison (`run_compare.py`, which auto-reads grid/cluster from
+each run's `config.json`) and the feature analysis (§9) on both fresh models. This
+section will be filled with results once the jobs complete.
+
+---
+
+## 11. File map
 
 ```
 CLAUDE.md                  modeling spec (formulas, conventions, feature lists)
 ANALYSIS.md                this document
 papers/10341148.pdf        reference paper (+ .txt extract)
 run_biodiv_train.py        training entry point (pretrain → train → diagnostics)
-run_clariden.sh            SLURM submit script (current canonical config)
+run_clariden.sh            SLURM submit script (n=100 canonical config)
+run_clariden_692.sh        SLURM submit script (692 parcels, 9 clusters; §10)
 run_compare.py             paper-comparison driver (worst-case + stochastic)
 src/
   config.py                Config + MapData dataclasses
@@ -403,6 +555,8 @@ src/
   diagnostics.py           action_span_diagnostics
   baselines.py             Knapsack + StaticApprox + the two natures (comparison)
   sanity.py, viz.py        assertions + plotting helpers
+tools/
+  analyze_features.py      encoder feature interpretation (§9): Q-fit + effective rank
 scripts/
   plot_episode.py          renders per-year episode grids + map heatmaps
   inspect_episode.py       interactive episode walk
@@ -423,6 +577,7 @@ outputs/slurm/biodiv-<jobid>/   per-run artifacts (see §3); compare/ holds §6 
 
 ---
 
-*Generated 2026-05-27. Timings are GPU (CUDA) on the Clariden `pytorch/v2.9.1:v2`
-uenv. Encoder param counts and per-call timings are directly measured; n=692
-end-to-end times are arithmetic extrapolations from those measured ratios.*
+*Generated 2026-05-27; §§9–10 added 2026-06-01 (branch `exact-nature-feasibility`).
+Timings are GPU (CUDA) on the Clariden `pytorch/v2.9.1:v2` uenv. Encoder param
+counts and per-call timings are directly measured; n=692 end-to-end times are
+arithmetic extrapolations from those measured ratios.*

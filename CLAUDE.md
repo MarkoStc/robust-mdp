@@ -208,6 +208,19 @@ Generate diverse nature actions by:
 - always include the zero action;
 - deduplicate actions.
 
+The stochastic greedy selection enforces feasibility with **exact immediate-p
+recomputation** (the repo default, matching the feasibility rule above): as each
+parcel is tentatively developed, the cumulative log-likelihood-ratio slack is
+updated using probabilities recomputed from the growing `d_plus`. Developing a
+parcel raises its same-cluster neighbours' `p`, so this is done incrementally —
+only the touched neighbours' contributions are updated (O(deg) per parcel) rather
+than recomputing over all `n`. The relative-slack form sums **only over developed
+parcels** (the `(1-d) log(1-p)` terms cancel against the all-zero baseline), and
+developing can only raise that slack, so every generated candidate is guaranteed
+feasible under the exact rule. Setting `fixed_p_feasibility = True` switches to the
+older frozen-p fast path (probabilities from the current `d`, never updated) for
+ablations; it is an approximation and is no longer the default.
+
 Nature feasibility:
 
 ```text
