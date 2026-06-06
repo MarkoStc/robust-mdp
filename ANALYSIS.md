@@ -514,21 +514,56 @@ pretrain 800 ep / 40 epoch, 200 candidates/side, 5 outer × 5 inner × 2000 samp
 | TD per-sample (`fit_linear_q`) | ~1.3 s/sample |
 | Pretrain | ~68 s (mini probe); full 800 ep ≈ 9–12 min |
 
-The full 692 run is projected at **~3 h** end-to-end — comfortably inside the
-8 h `normal` wall cap, confirming the §7.3 upper estimates were conservative (they
-assumed 500 candidates; at 200 the cost is only ~2× the toy, not ~12×).
+The login-probe TD micro-benchmark (~1.3 s/sample) **badly under-estimated the
+real per-outer cost**: on the actual GPU job (2441645) pretrain took **~39 min**
+and **one outer iter (2000 samples) took ~4.3 h**, so a 5-outer run needs ~22 h —
+far past the 8 h `normal` wall it was first submitted under (it timed out at
+outer 1/5). The fix (job 2483604) keeps everything identical but **halves samples
+to 1000 (~2.15 h/outer) and runs 4 outers** (θ converges by iter 2 at n=100),
+projecting ~9.3 h core + ~1 h overhead — inside the 12 h `normal` cap. The
+account only has `QOS=normal`, so the 24 h `low` partition is not available.
 
-### 10.5 Status (in progress)
+### 10.5 Results — n=100 exact nature (job 2441623, COMPLETE)
 
-Two SLURM jobs submitted on this branch:
-- **2441623** — n=100 exact-nature re-run (else identical to 2312346/2392077, so
-  the only change vs the published runs is the exact constraint; clean
-  apples-to-apples).
-- **2441645** — n=692, 9 clusters, exact nature, frozen encoder.
+This run is identical to the published 2312346/2392077 except for the exact-nature
+constraint, so it is a clean apples-to-apples test of the change.
 
-Pending the paper comparison (`run_compare.py`, which auto-reads grid/cluster from
-each run's `config.json`) and the feature analysis (§9) on both fresh models. This
-section will be filled with results once the jobs complete.
+**Training.** The exact adversary is genuinely harder: `avg_protected` settled at
+**~10.0 / 25.87** vs **~15.6** under frozen-p — the old approximation was letting
+the controller off easy. θ-norm converged by outer iter 2 (~0.55).
+
+**Paper comparison (`run_compare.py`, 20 worst-case × 40 stochastic seeds):**
+
+| Policy | Worst-case protected (↑) | Stochastic protected (↑) |
+|---|---|---|
+| **Ours (robust)** | **7.74** (median 6.32, min 2.38) | **13.91** |
+| StaticApprox (Problem 7) | 3.15 (flat) | 3.15 |
+| Knapsack (Problem 8/9) | 3.15 (flat) | 13.37 |
+
+**Ours = +21.5 % less worst-case lost value than *both* baselines**, ≈ 2.45× their
+worst-case protected value, and it matches Knapsack in the average case while
+crushing StaticApprox there too. Notably the **deployment worst-case improved vs
+the frozen-p run** (7.74 vs 4.73): training against the correct, harder adversary
+yields a *more* robust policy even though it protects less on average — the central
+robustness story for the report.
+
+**Span diagnostics.** Candidate sets cover the reference action-effect pool
+essentially exactly at every t (median projection error ≤ ~1e-10; ~1e-16 at most
+steps). The ~100–200 sampled candidates span the strategically-relevant subspace.
+
+**Encoder feature interpretation (§9 re-run on this model).** Unchanged story:
+encoder held-out R² = **0.968** vs engineered **0.961** (tie — encoder adds
+nothing over hand features); effective rank **PR = 1.16 / 64**, 1 dim = 92.5 %
+energy (**severe collapse**). Practical upshot stands: at 692 the encoder can be
+dropped for engineered features with no expected loss.
+
+### 10.6 Status — n=692 (in progress)
+
+- **2441645** (first attempt) — TIMED OUT at 8 h after only outer 1/5
+  (avg_protected 32.2 / 59.2). Superseded.
+- **2483604** (resubmit) — n=692, 9 clusters, exact nature, frozen encoder,
+  1000 samples × 4 outers on the 12 h `normal` partition. **RUNNING.** Paper
+  comparison + feature analysis will be added here on completion.
 
 ---
 

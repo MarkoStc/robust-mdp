@@ -5,7 +5,7 @@
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
 #SBATCH --gpus-per-node=1
-#SBATCH --time=08:00:00
+#SBATCH --time=12:00:00
 #SBATCH --output=outputs/slurm/biodiv-%j/slurm.out
 #SBATCH --error=outputs/slurm/biodiv-%j/slurm.err
 #SBATCH --uenv=pytorch/v2.9.1:v2
@@ -34,15 +34,19 @@ nvidia-smi || true
 # coherent with the paper / CLAUDE.md. Encoder: pretrained-then-frozen CNN; only
 # the linear head theta is trained inside the robust-MDP loop.
 #
-# Local probe timing @692 (200x200 cand, exact nature, 1 GPU):
-#   ~0.2 s/TD-sample, pretrain ~12 min, training ~2.5-3 h  => ~3 h total.
+# MEASURED timing @692 (job 2441645, 200x200 cand, exact nature, 1 GPU):
+#   pretrain ~39 min; ONE outer iter (2000 samples) ~4.3 h. The first 8h run
+#   only finished outer 1/5 before TIMEOUT. Account only has QOS=normal (no low
+#   partition), so cap is the 12h normal partition. Halve samples to 1000
+#   (~2.15 h/outer) and run 4 outers (theta converged by iter 2 at n=100).
+#   Projected: 0.65h pretrain + 4*2.15h ~= 9.3h core (+~1h overhead) < 12h.
 python -u run_biodiv_train.py \
   --grid-h 4 --grid-w 173 \
   --n-cluster-rows 3 --n-cluster-cols 3 \
   --lambda-uncertainty 0.20 \
   --budget-per-year 14.0 \
-  --samples-per-iter 2000 \
-  --outer-iters 5 \
+  --samples-per-iter 1000 \
+  --outer-iters 4 \
   --inner-M 5 \
   --n-controller-candidates 200 \
   --n-nature-candidates 200 \
