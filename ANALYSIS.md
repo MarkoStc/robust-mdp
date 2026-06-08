@@ -324,51 +324,48 @@ a faithfulness check on the baselines.
   `Bernoulli(p_i)` model the paper uses to *simulate* realized developments (no
   robustness cap). This is the typical-case test.
 
-### 6.3 Results (run 2392077; run 2312346 agrees)
+### 6.3 Results — see §10.5 / §10.6 (current, exact-nature)
 
-| Nature | Ours | StaticApprox (paper proposal) | Knapsack |
-|---|---|---|---|
-| **Worst-case lost value** (↓) | **21.15 ± 1.49** | 22.72 | 22.72 |
-| **Average-case lost value** (↓) | **12.24** | 19.82 | 12.48 |
-| Worst-case protected (↑) | 4.72 | 3.15 | 3.15 |
-| Average-case protected (↑) | 13.57 | 3.15 | 13.37 |
-
-**Interpretation:**
-- **Worst-case: ours ≈ 7% less loss** than StaticApprox, reproducible across both
-  runs (2312346: 21.14 ± 1.17; 2392077: 21.15 ± 1.49).
-- **StaticApprox == Knapsack on worst-case** — exactly the paper's **Proposition
-  6.1** (small `lambda` ⟹ uncertainty set so large the two coincide). A good
-  sanity check that the baselines are faithful.
-- **Average-case: ours (and Knapsack) beat the non-adaptive StaticApprox by ~38%**,
-  because StaticApprox is stuck with its small up-front plan no matter what happens.
-- **The robust headline: ours is the only method strong in *both* regimes.**
-  Knapsack collapses on the worst case (ignores uncertainty); StaticApprox
-  collapses on average (cannot adapt). Ours does not collapse on either.
+> **The earlier frozen-p comparison numbers were removed as superseded.** They were
+> produced under the frozen-p candidate-feasibility approximation (runs
+> `biodiv-2392077` / `biodiv-2312346`) and *understated* the worst-case margin
+> (they reported Ours ≈ 7 % less worst-case loss than StaticApprox). Training and
+> evaluating against the **correct exact immediate-p adversary** (§10.1) roughly
+> tripled that margin. The current, measured results are:
+>
+> - **n=100 exact** (`biodiv-2441623`): **§10.5** — Ours **+21.5 %** less worst-case
+>   loss than *both* baselines; StaticApprox == Knapsack on the worst case (a live
+>   confirmation of **Proposition 6.1**, the baseline-faithfulness check).
+> - **n=692** (`biodiv-2483604`): **§10.6** — Ours **+51.2 %** vs StaticApprox but
+>   **−14.3 % vs Knapsack** (ample-budget regime; honest non-win vs Knapsack).
+>
+> Always read the comparison story from §10, not from this section.
 
 ### 6.4 Methodology lesson baked into the code
 
 Our policy **samples** its candidate actions, so a *single* greedy-adversary
-rollout is noisy (std ≈ 1.2–1.5). An early single-episode measurement swung from
-−10.7% to +0.4% between the two runs — a pure metric artifact. The worst-case
-evaluation therefore **averages over `--n-worstcase` seeds (default 20)** and
-reports the distribution (StaticApprox/Knapsack are deterministic ⟹ std 0).
+rollout is noisy (std ≈ 1–5 depending on scale). Early single-episode measurements
+swung sign between runs — a pure metric artifact. The worst-case evaluation
+therefore **averages over `--n-worstcase` seeds (default 20)** and reports the
+distribution (StaticApprox/Knapsack are deterministic ⟹ std 0).
 **Always report the multi-seed distribution, never a single rollout.**
 
 ### 6.5 The comparison plot — `compare/comparison_vs_paper.png`
 
-Two panels, three methods (`Ours`, `StaticApprox`, `Knapsack`):
+One PNG per run (each run dir's `compare/`), two panels, three methods (`Ours`,
+`StaticApprox`, `Knapsack`):
 - **Left — "Loss to development (lower = better)":** for each method, a solid bar =
   worst-case mean (with min/max error bars) and a faded bar = stochastic mean
-  (with min/max error bars). Ours' solid bar is lowest; StaticApprox's faded bar
-  is far higher than the other two.
+  (with min/max error bars).
 - **Right — "Value preserved (higher = better)":** solid = worst-case protected,
-  faded = stochastic protected. Ours leads on worst-case; ours ≈ Knapsack ≫
-  StaticApprox on average.
-- Title shows `total value = 25.9`.
+  faded = stochastic protected.
+- Title shows the run's `total value` (25.87 at n=100, 59.21 at 692).
 
-`compare/comparison_results.json` holds the full numbers: `meta` (run dir, lambda,
-budget, horizon, total value, #stochastic episodes, #parcels StaticApprox planned)
-and `results[method][worst_case|stochastic][lost_value|protected_value|free_value]`
+The current report plots are `outputs/slurm/biodiv-2441623/compare/comparison_vs_paper.png`
+(n=100 exact) and `outputs/slurm/biodiv-2483604/compare/comparison_vs_paper.png`
+(692). `compare/comparison_results.json` holds the full numbers: `meta` (run dir,
+lambda, budget, horizon, total value, #stochastic episodes, #parcels StaticApprox
+planned) and `results[method][worst_case|stochastic][lost_value|protected_value|free_value]`
 with `mean/std/min/max/median`.
 
 ### 6.6 Reproduce
@@ -376,11 +373,13 @@ with `mean/std/min/max/median`.
 ```bash
 uenv run pytorch/v2.9.1:v2 --view=default -- bash -c \
  "source ~/qa-gym/.venv/bin/activate && cd ~/robust-mdp && \
-  python run_compare.py --run-dir outputs/slurm/biodiv-2392077 \
+  python run_compare.py --run-dir outputs/slurm/biodiv-2441623 \
   --n-worstcase 20 --n-stochastic 40"
 ```
-Runs in ~16 s on GPU. Loads that run's frozen encoder + `theta_final`, rebuilds the
-seed-matched map, solves both baselines, evaluates all three, writes the JSON+PNG.
+Loads that run's frozen encoder + `theta_final`, rebuilds the seed-matched map,
+solves both baselines, evaluates all three, writes the JSON+PNG. ~16 s at n=100;
+at 692 the O(n²) adversary is heavy — run it as a batch job (`run_postprocess_692.sh`),
+not on the login node.
 
 ---
 
@@ -395,58 +394,24 @@ which can be solved to optimality within 10 minutes" with Gurobi/CPLEX), budget
 swept 25–175 M USD, evaluated on 1000 cellular-automata samples.
 
 Our pipeline is **multistage (T=10)** and RL-based, so a direct port is more
-expensive than their single-stage MILP. The estimates below assume we keep our
-T=10 multistage setup but on a 692-parcel / 9-cluster map.
+expensive than their single-stage MILP.
 
-### 7.2 Measured scaling micro-benchmark (provable basis)
+### 7.2 Measured 692 timings — see §10.4 / §10.6
 
-Same code paths, same GPU node, n=100 (3 clusters) vs a synthetic n=702
-(9-cluster block grid, the closest grid-shaped stand-in for 692). These ratios are
-the empirical basis for every estimate that follows:
-
-| Quantity | n=100 / 3 clust | n=702 / 9 clust | ratio |
-|---|---|---|---|
-| Encoder params | 29,440 | 31,168 | 1.06× |
-| `policy_at_state` @200 cand | 18.7 ms | 167.1 ms | **8.9×** |
-| `policy_at_state` @500 cand | 39.0 ms | 491.0 ms | 12.6× |
-| Pretrain episode (T=10) | 174 ms | 802 ms | 4.6× |
-
-Why `policy_at_state` grows ~9× (not 7×): candidate generation and the engineered
-embedding scan all parcels, and the encoder forward runs over ~7× the grid cells;
-combined with a larger same-cluster adjacency these compound super-linearly.
-
-### 7.3 Time estimates for n=692
-
-**(a) Encoder pretraining** (must be redone — §7.4). The 100.9 s toy pretrain
-splits into data collection (rollouts, scales ≈ 4.6×) and 40 epochs over the
-dataset (CNN forward/backward over ~7× the cells, scales ≈ 7×). Net ≈ 5–7× →
-**≈ 9–12 minutes** at 800 episodes / 40 epochs. (Grows linearly if you raise
-episodes/epochs for the harder problem.)
-
-**(b) Robust-MDP training** (5 outer × 5 inner × 2000 samples), which is
-`policy_at_state`-dominated:
-- **Same config (200 candidates):** 4781.6 s × 8.9 ≈ **42,600 s ≈ 11–12 hours.**
-- **Paper-scale candidates (500), recommended given the larger action space:**
-  per-eval 491 ms vs the toy's 18.7 ms ⟹ ≈ 26× ⟹ **≈ 35 hours ≈ 1.5 days.**
-
-**(c) Comparison run** (`run_compare.py`): policy evals scale ~9×, but the
-StaticApprox MILP grows from `T·100` to `T·692 ≈ 6,920` binaries; HiGHS handles it
-but per-solve cost and constraint-generation iterations rise. Estimate **≈ 5–15
-minutes** (MILP-dominated; the paper solved a comparable MILP in ~10 min with
-Gurobi).
-
-**Caveats (read before quoting):** these scale the measured *per-operation* cost by
-the *same loop counts*. The dominant unknown is whether 692 parcels needs **more
-candidates, more samples_per_iter, or more outer/inner iters to converge** — almost
-certainly yes, which would push training up by a further constant factor. Treat the
-numbers as order-of-magnitude, GPU, on this hardware:
-
-| Stage | n=100 (measured) | n=692 (estimate) |
-|---|---|---|
-| Encoder pretrain | 100.9 s | ~9–12 min |
-| Robust-MDP training (200 cand) | 4,781.6 s (80 min) | ~12 h |
-| Robust-MDP training (500 cand) | — | ~1.5 days |
-| Comparison run | 16 s | ~5–15 min |
+> **The earlier order-of-magnitude extrapolations (per-op micro-benchmarks scaled by
+> loop counts) were removed as superseded by the real 692 run.** We now have
+> *measured* numbers from job `biodiv-2483604`:
+>
+> | Stage | n=100 (measured) | n=692 (measured, job 2483604) |
+> |---|---|---|
+> | Encoder pretrain | 100.9 s | ~39 min |
+> | One outer iter | — | ~4.3 h @2000 samples; ~2.15 h @1000 |
+> | Robust-MDP training | 4,781.6 s (80 min) | ~8 h 47 m (1000 samples × 4 outers) |
+> | Comparison (`run_compare.py`) | 16 s | part of the ~16 min postprocess batch |
+>
+> See **§10.4** for the timing breakdown (and why the first 8 h attempt timed out)
+> and **§10.6** for the completed run. The account has only `QOS=normal` (12 h cap;
+> no 24 h `low` partition), which set the 1000-sample × 4-outer budget.
 
 ### 7.4 Why the trained encoder **cannot** be reused for 692 parcels
 
@@ -459,15 +424,15 @@ numbers as order-of-magnitude, GPU, on this hardware:
    no useful features for the real one.
 3. **Geometry / architecture.** The real 692 parcels are **irregular geographic
    cells, not a clean rectangle**. The CNN needs an `H×W` grid; two options:
-   - embed parcels into a bounding grid with masked empty cells (what the §7.2
-     synthetic stand-in does), or
+   - embed parcels into a bounding grid with masked empty cells (what the §10.3
+     synthetic 4×173 stand-in does), or
    - switch to a **GNN over the parcel adjacency graph** — the cleaner choice for
      arbitrary parcel graphs (`CLAUDE.md` §"Frozen neural encoder option" already
      flags this). A GNN is a different architecture entirely, so again: retrain.
 
-In all cases the encoder is **re-pretrained from scratch** and then frozen, and the
-~9–12 min estimate in §7.3(a) applies. The parameter count stays ~31k for the CNN
-path (§4.2); a comparable-width GNN (3 message-passing layers, 32 hidden, +5
+In all cases the encoder is **re-pretrained from scratch** and then frozen (the
+measured 692 pretrain was ~39 min, §10.4). The parameter count stays ~31k for the
+CNN path (§4.2); a comparable-width GNN (3 message-passing layers, 32 hidden, +5
 globals) lands in the same 25–35k ballpark.
 
 ---
