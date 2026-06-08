@@ -132,22 +132,16 @@ nature) is enforced separately and exactly (§10.1), never via the score.**
 
 ---
 
-## 3. The training runs
+## 3. Training-run artifacts
 
-Two completed runs live under `outputs/slurm/`. They use identical config (above);
-the second is a re-run after a diagnostics fix. **Both converged to the same place**
-(`theta_norm ≈ 0.60`, flat after outer iter 1).
-
-| Run | When | Pretrain | Training | Outcome (avg over rollouts) |
-|---|---|---|---|---|
-| `biodiv-2312346` | 2026-05-19 | — | — | protected ≈ 15.6 / 25.87 total, theta_norm 0.607 |
-| `biodiv-2392077` | 2026-05-27 | 100.9 s | 4781.6 s (≈80 min) | protected ≈ 15.3–15.6, theta_norm 0.600 |
-
-**Artifacts per run directory:**
+Each training run writes a directory `outputs/slurm/biodiv-<jobid>/`. The runs
+referenced in this document are the exact-nature **n=100** (`biodiv-2441623`, §10.5)
+and **692** (`biodiv-2483604`, §10.6); the contents of every run directory are:
 - `config.json` — the exact `Config` used (the source of truth for that run).
 - `encoder.pt` — frozen CNN weights (see §4). ~121 KB.
-- `theta_iter{1..5}.npy`, `theta_final.npy` — the learned 64-dim linear head after
-  each outer round; `theta_final` is the policy you evaluate with.
+- `theta_iter{1..N}.npy`, `theta_final.npy` — the learned 64-dim linear head after
+  each outer round (N = number of outer iters); `theta_final` is the policy you
+  evaluate with.
 - `train_log.json` — per-outer-round metrics: `avg_protected_value`,
   `avg_developed_value`, `avg_free_value`, `theta_norm`. **Reading it:** flat
   curves after round 1 = converged; protected ≫ developed = controller winning.
@@ -156,8 +150,8 @@ the second is a re-run after a diagnostics fix. **Both converged to the same pla
   diagnostics dump, total timings).
 - `compare/` — the paper-comparison outputs (see §6).
 
-The `total value` of the map is **25.87** (sum of all parcel values); every
-"value" number is on that scale.
+Every "value" number is on the scale of that map's `total value` (sum of all parcel
+values): **25.87** at n=100, **59.21** at 692.
 
 ---
 
